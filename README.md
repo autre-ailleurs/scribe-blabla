@@ -35,3 +35,4 @@ Pour fonctionner correctement, l'application s'appuie sur les outils système su
 ```bash
 sudo apt update
 sudo apt install python3 python3-tk python3-gtts mpv ffmpeg
+# scribe-blabla
