@@ -1,0 +1,6 @@
+__pycache__/
+*.mp3
+*.txt
+config.json
+*.deb
+scribe-blabla-pkg/

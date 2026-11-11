@@ -1,0 +1,910 @@
+#!/usr/bin/env python3
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+from gtts import gTTS
+import threading
+import subprocess
+import os
+import tempfile
+import json
+import re
+
+# --- Classe pour gérer les infobulles intelligentes (anti-troncature) ---
+class ToolTip:
+    def __init__(self, widget, texte):
+        self.widget = widget
+        self.texte = texte
+        self.tipwindow = None
+        self.id = None
+        self.widget.bind("<Enter>", self.entree)
+        self.widget.bind("<Leave>", self.sortie)
+
+    def entree(self, event=None):
+        self.planifier_affichage()
+
+    def sortie(self, event=None):
+        self.annuler()
+        self.masquer()
+
+    def planifier_affichage(self):
+        self.annuler()
+        self.id = self.widget.after(500, self.afficher)
+
+    def annuler(self):
+        id_actuel = self.id
+        self.id = None
+        if id_actuel:
+            self.widget.after_cancel(id_actuel)
+
+    def afficher(self):
+        if self.tipwindow or not self.texte:
+            return
+        
+        self.tipwindow = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        
+        label = tk.Label(
+            tw, text=self.texte, justify=tk.LEFT,
+            background="#FFFFE0", relief=tk.SOLID, borderwidth=1,
+            font=(POLICE_UI, taille_police_infobulles)
+        )
+        label.pack(ipadx=4, ipady=2)
+        tw.update_idletasks()
+
+        x = self.widget.winfo_rootx() + 10
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 5
+        
+        largeur_bulle = tw.winfo_reqwidth()
+        largeur_fenetre_app = root.winfo_rootx() + root.winfo_width()
+
+        if x + largeur_bulle > largeur_fenetre_app - 10:
+            x = largeur_fenetre_app - largeur_bulle - 10
+
+        tw.wm_geometry(f"+{x}+{y}")
+
+    def masquer(self):
+        tw = self.tipwindow
+        self.tipwindow = None
+        if tw:
+            tw.destroy()
+
+# --- Chemins et Configuration Portable ---
+NOM_APP = "Scribe BlaBla"
+VERSION_APP = "v4.19"
+
+DOSSIER_APPLI = os.path.expanduser("~/ScribeBlaBla")
+DOSSIER_VOIX_LANGUES = os.path.join(DOSSIER_APPLI, "voix-langues")
+CHEMIN_CONFIG = os.path.join(DOSSIER_APPLI, "config.json")
+
+os.makedirs(DOSSIER_VOIX_LANGUES, exist_ok=True)
+
+processus_lecture = None
+lecture_en_cours = False
+conversion_en_cours = False
+fichiers_temporaires = []
+chemin_fichier_actuel = None
+texte_initial = ""
+
+taille_police_texte = 10
+taille_police_boutons = 9
+taille_police_infobulles = 8
+POLICE_FAMILLE = "Courier"
+POLICE_UI = "Arial"
+
+choix_vitesses = ["0.5x (Très lent)", "0.75x (Ralenti)", "0.9x (Léger ralenti)", "0.95x (Ralenti fin)", "1.0x (Standard)", "1.25x (Rapide)", "1.5x (Très rapide)", "1.75x (Soutenu)", "2.0x (Double vitesse)"]
+
+def charger_voix_disponibles():
+    choix_base = [
+        "Français (France)",
+        "Français (Canada)",
+        "Anglais (États-Unis)",
+        "Anglais (Royaume-Uni)",
+        "Espagnol",
+        "Italien"
+    ]
+    
+    if not os.path.exists(DOSSIER_VOIX_LANGUES):
+        os.makedirs(DOSSIER_VOIX_LANGUES, exist_ok=True)
+        return choix_base
+    
+    voix_supplementaires = []
+    try:
+        for fichier in os.listdir(DOSSIER_VOIX_LANGUES):
+            if fichier.endswith(".onnx"):
+                nom_propre = os.path.splitext(fichier)[0].replace("_", " ").capitalize()
+                voix_supplementaires.append(f"Local: {nom_propre}")
+    except Exception as e:
+        print(f"Erreur lors du chargement du dossier voix-langues : {e}")
+        
+    return choix_base + voix_supplementaires
+
+choix_langues = charger_voix_disponibles()
+
+config_defaut = {
+    "geometrie": "750x620",
+    "taille_police_texte": 10,
+    "taille_police_boutons": 9,
+    "taille_police_infobulles": 8,
+    "vitesse": "1.0x (Standard)",
+    "langue": "Français (France)",
+    "dernier_dossier": os.path.expanduser("~"),
+    "nb_derniers_fichiers": 5,
+    "derniers_fichiers": []
+}
+
+def charger_configuration():
+    if os.path.exists(CHEMIN_CONFIG):
+        try:
+            with open(CHEMIN_CONFIG, 'r', encoding='utf-8') as f:
+                return {**config_defaut, **json.load(f)}
+        except:
+            pass
+    return config_defaut.copy()
+
+config_actuelle = charger_configuration()
+taille_police_texte = config_actuelle.get("taille_police_texte", 10)
+taille_police_boutons = config_actuelle.get("taille_police_boutons", 9)
+taille_police_infobulles = config_actuelle.get("taille_police_infobulles", 8)
+
+def sauvegarder_configuration():
+    try:
+        config = {
+            "geometrie": root.geometry(),
+            "taille_police_texte": taille_police_texte,
+            "taille_police_boutons": taille_police_boutons,
+            "taille_police_infobulles": taille_police_infobulles,
+            "vitesse": combo_vitesse.get(),
+            "langue": combo_langue.get(),
+            "dernier_dossier": os.path.dirname(chemin_fichier_actuel) if chemin_fichier_actuel else config_actuelle.get("dernier_dossier", os.path.expanduser("~")),
+            "nb_derniers_fichiers": config_actuelle.get("nb_derniers_fichiers", 5),
+            "derniers_fichiers": config_actuelle.get("derniers_fichiers", [])
+        }
+        with open(CHEMIN_CONFIG, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=4)
+    except Exception as e:
+        print(f"Erreur lors de la sauvegarde de la configuration : {e}")
+
+def mettre_a_jour_indicateur_fichier():
+    if chemin_fichier_actuel:
+        label_nom_fichier.config(text=chemin_fichier_actuel, fg="#2E7D32")
+        btn_ouvrir_dossier.pack(side=tk.LEFT, padx=(6, 0))
+    else:
+        label_nom_fichier.config(text="Nouveau fichier", fg="#C62828")
+        btn_ouvrir_dossier.pack_forget()
+
+def ouvrir_dossier_contenant():
+    if chemin_fichier_actuel and os.path.exists(chemin_fichier_actuel):
+        dossier = os.path.dirname(chemin_fichier_actuel)
+        try:
+            subprocess.Popen(["xdg-open", dossier])
+        except Exception as e:
+            messagebox.showerror("Erreur", f"Impossible d'ouvrir le dossier :\n{e}")
+
+def ajouter_aux_recents(chemin):
+    recents = config_actuelle.get("derniers_fichiers", [])
+    if chemin in recents:
+        recents.remove(chemin)
+    recents.insert(0, chemin)
+    
+    max_fichiers = config_actuelle.get("nb_derniers_fichiers", 5)
+    config_actuelle["derniers_fichiers"] = recents[:max_fichiers]
+    sauvegarder_configuration()
+    mettre_a_jour_menu_fichier()
+
+def mettre_a_jour_menu_fichier():
+    menu_fichier.delete(0, 10)
+    menu_fichier.add_command(label="Nouveau texte", command=nouveau_texte, accelerator="Ctrl+N")
+    menu_fichier.add_command(label="Ouvrir...", command=selectionner_fichier, accelerator="Ctrl+O")
+    menu_fichier.add_command(label="Enregistrer le texte", command=enregistrer_texte, accelerator="Ctrl+S")
+    
+    menu_recents.delete(0, tk.END)
+    recents = config_actuelle.get("derniers_fichiers", [])
+    if recents:
+        for f_path in recents:
+            if os.path.exists(f_path):
+                nom_court = os.path.basename(f_path)
+                menu_recents.add_command(label=nom_court, command=lambda p=f_path: charger_fichier_specifique(p))
+    else:
+        menu_recents.add_command(label="(Aucun fichier récent)", state=tk.DISABLED)
+
+    menu_fichier.add_cascade(label="Fichiers récents", menu=menu_recents)
+    menu_fichier.add_separator()
+    menu_fichier.add_command(label="Options", command=ouvrir_options)
+    menu_fichier.add_separator()
+    menu_fichier.add_command(label="Quitter", command=quitter_application)
+
+def charger_fichier_specifique(chemin):
+    global chemin_fichier_actuel, texte_initial
+    if verifier_modifications():
+        reponse = messagebox.askyesnocancel("Fichier modifié", "Le texte actuel a été modifié. Souhaitez-vous l'enregistrer ?")
+        if reponse is True:
+            enregistrer_texte()
+        elif reponse is None:
+            return
+    try:
+        with open(chemin, 'r', encoding='utf-8') as f:
+            contenu = f.read()
+        chemin_fichier_actuel = chemin
+        entree_chemin.delete(0, tk.END)
+        entree_chemin.insert(0, chemin)
+        zone_texte.delete("1.0", tk.END)
+        zone_texte.insert("1.0", contenu)
+        texte_initial = contenu
+        ajouter_aux_recents(chemin)
+        mettre_a_jour_indicateur_fichier()
+    except Exception as e:
+        messagebox.showerror("Erreur", f"Impossible d'ouvrir le fichier :\n{e}")
+
+def nouveau_texte(event=None):
+    global chemin_fichier_actuel, texte_initial
+    if verifier_modifications():
+        reponse = messagebox.askyesnocancel("Nouveau texte", "Le texte actuel a été modifié. Souhaitez-vous l'enregistrer ?")
+        if reponse is True:
+            enregistrer_texte()
+        elif reponse is None:
+            return
+    zone_texte.delete("1.0", tk.END)
+    entree_chemin.delete(0, tk.END)
+    chemin_fichier_actuel = None
+    texte_initial = ""
+    mettre_a_jour_indicateur_fichier()
+    return "break"
+
+def annuler_action(event=None):
+    try:
+        zone_texte.edit_undo()
+    except Exception:
+        pass
+    return "break"
+
+def ouvrir_options():
+    fen_opt = tk.Toplevel(root)
+    fen_opt.geometry("450x550")
+    fen_opt.resizable(False, False)
+    fen_opt.overrideredirect(True)
+    fen_opt.transient(root)
+    fen_opt.grab_set()
+
+    # Calcul précis pour centrer la fenêtre d'options par rapport à la fenêtre principale (root)
+    root.update_idletasks()
+    largeur_fen = 450
+    hauteur_fen = 550
+    x_root = root.winfo_rootx()
+    y_root = root.winfo_rooty()
+    w_root = root.winfo_width()
+    h_root = root.winfo_height()
+    
+    pos_x = x_root + (w_root // 2) - (largeur_fen // 2)
+    pos_y = y_root + (h_root // 2) - (hauteur_fen // 2)
+    fen_opt.geometry(f"{largeur_fen}x{hauteur_fen}+{pos_x}+{pos_y}")
+
+    # Barre de titre personnalisée propre avec bouton de fermeture (X)
+    cadre_titre_perso = tk.Frame(fen_opt, bg="#333333", height=30)
+    cadre_titre_perso.pack(fill=tk.X, side=tk.TOP)
+    cadre_titre_perso.pack_propagate(False)
+
+    lbl_titre_opt = tk.Label(cadre_titre_perso, text="Options de Scribe BlaBla", fg="white", bg="#333333", font=(POLICE_UI, 10, "bold"))
+    lbl_titre_opt.pack(side=tk.LEFT, padx=10)
+
+    btn_fermer_custom = tk.Button(cadre_titre_perso, text=" ✕ ", fg="white", bg="#C62828", bd=0, relief=tk.FLAT, font=(POLICE_UI, 9, "bold"), command=fen_opt.destroy, cursor="hand2")
+    btn_fermer_custom.pack(side=tk.RIGHT, fill=tk.Y, padx=2, pady=2)
+    ToolTip(btn_fermer_custom, "Fermer la fenêtre")
+
+    # Permettre de déplacer la fenêtre sans barre de titre en cliquant/glissant sur l'en-tête
+    def deplacer_fenetre(event):
+        x = event.x_root - x_decal
+        y = event.y_root - y_decal
+        fen_opt.geometry(f"+{x}+{y}")
+
+    def debut_deplacement(event):
+        global x_decal, y_decal
+        x_decal = event.x
+        y_decal = event.y
+
+    cadre_titre_perso.bind("<Button-1>", debut_deplacement)
+    cadre_titre_perso.bind("<B1-Motion>", deplacer_fenetre)
+    lbl_titre_opt.bind("<Button-1>", debut_deplacement)
+    lbl_titre_opt.bind("<B1-Motion>", deplacer_fenetre)
+
+    tk.Label(fen_opt, text="Configuration de l'application", font=(POLICE_UI, 11, "bold")).pack(pady=10)
+    
+    cadre_form = tk.Frame(fen_opt, padx=20, pady=5)
+    cadre_form.pack(fill=tk.BOTH, expand=True)
+
+    tk.Label(cadre_form, text="Langue / Voix :", font=(POLICE_UI, 9)).grid(row=0, column=0, sticky="w", pady=6)
+    list_voix_actuelles = charger_voix_disponibles()
+    opt_langue = ttk.Combobox(cadre_form, values=list_voix_actuelles, state="readonly", width=22)
+    opt_langue.set(combo_langue.get())
+    opt_langue.grid(row=0, column=1, sticky="e", pady=6)
+
+    tk.Label(cadre_form, text="Vitesse par défaut :", font=(POLICE_UI, 9)).grid(row=1, column=0, sticky="w", pady=6)
+    opt_vitesse = ttk.Combobox(cadre_form, values=choix_vitesses, state="readonly", width=22)
+    opt_vitesse.set(combo_vitesse.get())
+    opt_vitesse.grid(row=1, column=1, sticky="e", pady=6)
+
+    tk.Label(cadre_form, text="Taille police (zone texte) :", font=(POLICE_UI, 9)).grid(row=2, column=0, sticky="w", pady=6)
+    opt_police_txt = tk.Spinbox(cadre_form, from_=8, to=28, width=5, font=(POLICE_UI, 9))
+    opt_police_txt.delete(0, tk.END)
+    opt_police_txt.insert(0, str(taille_police_texte))
+    opt_police_txt.grid(row=2, column=1, sticky="e", pady=6)
+
+    tk.Label(cadre_form, text="Taille police (boutons) :", font=(POLICE_UI, 9)).grid(row=3, column=0, sticky="w", pady=6)
+    opt_police_btn = tk.Spinbox(cadre_form, from_=7, to=16, width=5, font=(POLICE_UI, 9))
+    opt_police_btn.delete(0, tk.END)
+    opt_police_btn.insert(0, str(taille_police_boutons))
+    opt_police_btn.grid(row=3, column=1, sticky="e", pady=6)
+
+    tk.Label(cadre_form, text="Taille police (infobulles) :", font=(POLICE_UI, 9)).grid(row=4, column=0, sticky="w", pady=6)
+    opt_police_tip = tk.Spinbox(cadre_form, from_=7, to=16, width=5, font=(POLICE_UI, 9))
+    opt_police_tip.delete(0, tk.END)
+    opt_police_tip.insert(0, str(taille_police_infobulles))
+    opt_police_tip.grid(row=4, column=1, sticky="e", pady=6)
+
+    tk.Label(cadre_form, text="Nb fichiers récents :", font=(POLICE_UI, 9)).grid(row=5, column=0, sticky="w", pady=6)
+    opt_nb_recents = tk.Spinbox(cadre_form, from_=1, to=20, width=5, font=(POLICE_UI, 9))
+    opt_nb_recents.delete(0, tk.END)
+    opt_nb_recents.insert(0, str(config_actuelle.get("nb_derniers_fichiers", 5)))
+    opt_nb_recents.grid(row=5, column=1, sticky="e", pady=6)
+
+    tk.Label(cadre_form, text=f"Dossier voix (.onnx) :\n{DOSSIER_VOIX_LANGUES}", font=(POLICE_UI, 8, "italic"), fg="gray", justify="left").grid(row=6, column=0, columnspan=2, sticky="w", pady=(10, 2))
+
+    def valider_options():
+        global taille_police_texte, taille_police_boutons, taille_police_infobulles
+        nouvelles_voix = charger_voix_disponibles()
+        combo_langue.config(values=nouvelles_voix)
+        combo_langue.set(opt_langue.get())
+        combo_vitesse.set(opt_vitesse.get())
+        try:
+            taille_police_texte = max(8, min(28, int(opt_police_txt.get())))
+            zone_texte.config(font=(POLICE_FAMILLE, taille_police_texte))
+            taille_police_boutons = max(7, min(16, int(opt_police_btn.get())))
+            taille_police_infobulles = max(7, min(16, int(opt_police_tip.get())))
+            appliquer_taille_boutons(taille_police_boutons)
+            config_actuelle["nb_derniers_fichiers"] = max(1, min(20, int(opt_nb_recents.get())))
+            mettre_a_jour_menu_fichier()
+        except:
+            pass
+        sauvegarder_configuration()
+        fen_opt.destroy()
+        messagebox.showinfo("Options", "Options enregistrées avec succès.")
+
+    cadre_boutons_opt = tk.Frame(fen_opt, pady=10)
+    cadre_boutons_opt.pack()
+    tk.Button(cadre_boutons_opt, text="Enregistrer", bg="#4CAF50", fg="white", font=(POLICE_UI, 9, "bold"), command=valider_options, width=12).pack(side=tk.LEFT, padx=5)
+    tk.Button(cadre_boutons_opt, text="Annuler", command=fen_opt.destroy, width=12).pack(side=tk.LEFT, padx=5)
+
+def appliquer_taille_boutons(taille):
+    btn_reset_font.config(font=(POLICE_UI, taille))
+    btn_plus_font.config(font=(POLICE_UI, taille, "bold"))
+    btn_moins_font.config(font=(POLICE_UI, taille, "bold"))
+    for btn in boutons_pauses_liste:
+        btn.config(font=(POLICE_UI, max(7, taille - 1)))
+    lbl_pauses_titre.config(font=(POLICE_UI, taille, "bold"))
+    lbl_convertir.config(font=(POLICE_UI, taille, "bold"))
+    lbl_lecture.config(font=(POLICE_UI, taille, "bold"))
+
+def selectionner_fichier():
+    global chemin_fichier_actuel, texte_initial
+    if verifier_modifications():
+        reponse = messagebox.askyesnocancel("Fichier modifié", "Le texte actuel a été modifié. Souhaitez-vous l'enregistrer ?")
+        if reponse is True:
+            enregistrer_texte()
+        elif reponse is None:
+            return
+
+    dernier_dir = config_actuelle.get("dernier_dossier", os.path.expanduser("~"))
+    chemin = filedialog.askopenfilename(
+        initialdir=dernier_dir,
+        title="Sélectionner un fichier texte",
+        filetypes=[("Fichiers texte", "*.txt"), ("Tous les fichiers", "*.*")]
+    )
+    if chemin:
+        chemin_fichier_actuel = chemin
+        entree_chemin.delete(0, tk.END)
+        entree_chemin.insert(0, chemin)
+        try:
+            with open(chemin, 'r', encoding='utf-8') as f:
+                contenu = f.read()
+            zone_texte.delete("1.0", tk.END)
+            zone_texte.insert("1.0", contenu)
+            texte_initial = contenu
+            config_actuelle["dernier_dossier"] = os.path.dirname(chemin)
+            ajouter_aux_recents(chemin)
+            mettre_a_jour_indicateur_fichier()
+        except Exception as e:
+            messagebox.showerror("Erreur", f"Impossible de lire le fichier :\n{e}")
+
+def verifier_modifications():
+    texte_actuel = zone_texte.get("1.0", tk.END).strip()
+    return texte_actuel != texte_initial.strip()
+
+def enregistrer_texte(event=None):
+    global chemin_fichier_actuel, texte_initial
+    texte_actuel = zone_texte.get("1.0", tk.END).strip()
+    if not chemin_fichier_actuel:
+        dernier_dir = config_actuelle.get("dernier_dossier", os.path.expanduser("~"))
+        chemin = filedialog.asksaveasfilename(
+            initialdir=dernier_dir,
+            defaultextension=".txt",
+            filetypes=[("Fichiers texte", "*.txt")],
+            title="Enregistrer le fichier texte sous"
+        )
+        if not chemin:
+            return "break"
+        chemin_fichier_actuel = chemin
+        entree_chemin.delete(0, tk.END)
+        entree_chemin.insert(0, chemin_fichier_actuel)
+        
+    try:
+        with open(chemin_fichier_actuel, 'w', encoding='utf-8') as f:
+            f.write(texte_actuel)
+        texte_initial = texte_actuel
+        ajouter_aux_recents(chemin_fichier_actuel)
+        mettre_a_jour_indicateur_fichier()
+        messagebox.showinfo("Enregistrement", "Fichier texte enregistré avec succès.")
+    except Exception as e:
+        messagebox.showerror("Erreur", f"Impossible d'enregistrer le fichier :\n{e}")
+    return "break"
+
+def inserer_caractere(caractere):
+    zone_texte.insert(tk.INSERT, caractere)
+    zone_texte.focus()
+
+def modifier_taille_police(pas):
+    global taille_police_texte
+    taille_police_texte = max(8, min(28, taille_police_texte + pas))
+    zone_texte.config(font=(POLICE_FAMILLE, taille_police_texte))
+
+def reset_taille_police():
+    global taille_police_texte
+    taille_police_texte = 10
+    zone_texte.config(font=(POLICE_FAMILLE, taille_police_texte))
+
+def basculer_lecture_directe(event=None):
+    global lecture_en_cours
+    if not lecture_en_cours:
+        texte_complet = zone_texte.get("1.0", tk.END).strip()
+        if not texte_complet:
+            messagebox.showwarning("Attention", "La zone de texte est vide.")
+            return
+            
+        lecture_en_cours = True
+        lbl_lecture.config(text="Arrêter la lecture", bg="#C62828", cursor="arrow")
+        threading.Thread(target=executer_lecture_interactive, daemon=True).start()
+    else:
+        arreter_lecture_directe()
+
+def executer_lecture_interactive():
+    global processus_lecture, lecture_en_cours, fichiers_temporaires
+    try:
+        selection_langue = combo_langue.get()
+        dico_langues = {
+            "Français (France)": {"lang": "fr", "tld": "com"},
+            "Français (Canada)": {"lang": "fr", "tld": "ca"},
+            "Anglais (États-Unis)": {"lang": "en", "tld": "com"},
+            "Anglais (Royaume-Uni)": {"lang": "en", "tld": "co.uk"},
+            "Espagnol": {"lang": "es", "tld": "com"},
+            "Italien": {"lang": "it", "tld": "com"}
+        }
+        params = dico_langues.get(selection_langue, {"lang": "fr", "tld": "com"})
+
+        selection_vitesse = combo_vitesse.get()
+        dico_vitesses = {
+            "0.5x (Très lent)": 0.5, "0.75x (Ralenti)": 0.75, "0.9x (Léger ralenti)": 0.9,
+            "0.95x (Ralenti fin)": 0.95, "1.0x (Standard)": 1.0, "1.25x (Rapide)": 1.25, 
+            "1.5x (Très rapide)": 1.5, "1.75x (Soutenu)": 1.75, "2.0x (Double vitesse)": 2.0
+        }
+        facteur_vitesse = dico_vitesses.get(selection_vitesse, 1.0)
+
+        pos_curseur = zone_texte.index(tk.INSERT)
+        texte_restant = zone_texte.get(pos_curseur, tk.END).strip()
+        if not texte_restant:
+            texte_restant = zone_texte.get("1.0", tk.END).strip()
+
+        morceaux = re.split(r'(?<=[.!?\n])\s+', texte_restant)
+        morceaux = [m.strip() for m in morceaux if m.strip()]
+
+        for morceau in morceaux:
+            if not lecture_en_cours:
+                break
+
+            root.after(0, lambda m=morceau: surligner_morceau(m))
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_file:
+                temp_path = temp_file.name
+                fichiers_temporaires.append(temp_path)
+
+            generer_audio_morceau(morceau, selection_langue, params, facteur_vitesse, temp_path)
+
+            if not lecture_en_cours:
+                break
+
+            processus_lecture = subprocess.Popen(["mpv", "--no-video", "--really-quiet", temp_path])
+            processus_lecture.wait()
+
+    except Exception as e:
+        root.after(0, lambda err=str(e): messagebox.showwarning("Avertissement - Voix Locale", err))
+    finally:
+        arreter_lecture_directe()
+
+def arreter_lecture_directe():
+    global processus_lecture, lecture_en_cours, fichiers_temporaires
+    lecture_en_cours = False
+    
+    if processus_lecture:
+        try:
+            processus_lecture.terminate()
+            processus_lecture.kill()
+        except:
+            pass
+        processus_lecture = None
+        
+    for f in fichiers_temporaires:
+        if os.path.exists(f):
+            try:
+                os.remove(f)
+            except:
+                pass
+    fichiers_temporaires = []
+    
+    def reinitialiser_interface():
+        try:
+            zone_texte.tag_remove("surligne", "1.0", tk.END)
+            lbl_lecture.config(text="Lire à partir du curseur", bg="#1976D2", cursor="hand2")
+        except:
+            pass
+
+    root.after(0, reinitialiser_interface)
+
+def surligner_morceau(texte_recherche):
+    try:
+        idx_debut = zone_texte.search(texte_recherche, "1.0", tk.END)
+        if idx_debut:
+            idx_fin = f"{idx_debut}+{len(texte_recherche)}c"
+            zone_texte.tag_remove("surligne", "1.0", tk.END)
+            zone_texte.tag_add("surligne", idx_debut, idx_fin)
+            zone_texte.tag_config("surligne", background="#FFF59D")
+            zone_texte.mark_set(tk.INSERT, idx_debut)
+            zone_texte.see(idx_debut)
+    except:
+        pass
+
+def generer_audio_morceau(morceau, selection_langue, params, facteur_vitesse, temp_path):
+    if selection_langue.startswith("Local:"):
+        nom_voix = selection_langue.replace("Local: ", "").strip().lower()
+        chemin_onnx = None
+        for f in os.listdir(DOSSIER_VOIX_LANGUES):
+            if f.endswith(".onnx") and (nom_voix in f.lower() or f.lower().startswith(nom_voix)):
+                chemin_onnx = os.path.join(DOSSIER_VOIX_LANGUES, f)
+                break
+        
+        if chemin_onnx and os.path.exists(chemin_onnx):
+            try:
+                cmd_piper = ["piper", "--model", chemin_onnx, "--output_file", temp_path]
+                res_piper = subprocess.run(cmd_piper, input=morceau.encode('utf-8'), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                
+                if res_piper.returncode == 0:
+                    if facteur_vitesse != 1.0:
+                        temp_vitesse = temp_path + ".spd.mp3"
+                        cmd_v = ["ffmpeg", "-y", "-i", temp_path, "-filter:a", f"atempo={facteur_vitesse}", temp_vitesse]
+                        subprocess.run(cmd_v, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        if os.path.exists(temp_vitesse):
+                            os.replace(temp_vitesse, temp_path)
+                    return True
+                else:
+                    erreur_msg = res_piper.stderr.decode('utf-8', errors='ignore')
+                    raise Exception(f"Erreur d'exécution Piper TTS :\n{erreur_msg}")
+            except FileNotFoundError:
+                raise Exception("L'exécutable 'piper' est introuvable sur votre système Ubuntu.\nVeuillez installer Piper pour utiliser les voix .onnx.")
+        else:
+            raise Exception(f"Le fichier modèle .onnx correspondant à '{selection_langue}' est introuvable dans le dossier :\n{DOSSIER_VOIX_LANGUES}")
+
+    if facteur_vitesse == 1.0:
+        tts = gTTS(text=morceau, lang=params["lang"], tld=params["tld"], slow=False)
+        tts.save(temp_path)
+    else:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_raw:
+            temp_raw_path = temp_raw.name
+            fichiers_temporaires.append(temp_raw_path)
+        
+        tts = gTTS(text=morceau, lang=params["lang"], tld=params["tld"], slow=False)
+        tts.save(temp_raw_path)
+
+        cmd = [
+            "ffmpeg", "-y", "-i", temp_raw_path,
+            "-filter:a", f"atempo={facteur_vitesse}",
+            "-b:a", "192k",
+            temp_path
+        ]
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return True
+
+def executer_conversion(fichier_mp3):
+    global conversion_en_cours, fichiers_temporaires
+    fichiers_parties = []
+    try:
+        texte = zone_texte.get("1.0", tk.END).strip()
+        selection_langue = combo_langue.get()
+        dico_langues = {
+            "Français (France)": {"lang": "fr", "tld": "com"},
+            "Français (Canada)": {"lang": "fr", "tld": "ca"},
+            "Anglais (États-Unis)": {"lang": "en", "tld": "com"},
+            "Anglais (Royaume-Uni)": {"lang": "en", "tld": "co.uk"},
+            "Espagnol": {"lang": "es", "tld": "com"},
+            "Italien": {"lang": "it", "tld": "com"}
+        }
+        params = dico_langues.get(selection_langue, {"lang": "fr", "tld": "com"})
+        
+        selection_vitesse = combo_vitesse.get()
+        dico_vitesses = {
+            "0.5x (Très lent)": 0.5, "0.75x (Ralenti)": 0.75, "0.9x (Léger ralenti)": 0.9,
+            "0.95x (Ralenti fin)": 0.95, "1.0x (Standard)": 1.0, "1.25x (Rapide)": 1.25, 
+            "1.5x (Très rapide)": 1.5, "1.75x (Soutenu)": 1.75, "2.0x (Double vitesse)": 2.0
+        }
+        facteur_vitesse = dico_vitesses.get(selection_vitesse, 1.0)
+
+        morceaux = re.split(r'(?<=[.!?\n])\s+', texte)
+        morceaux = [m.strip() for m in morceaux if m.strip()]
+
+        if not morceaux:
+            restaurer_bouton_conversion()
+            return
+
+        for morceau in morceaux:
+            if not conversion_en_cours:
+                break
+
+            root.after(0, lambda m=morceau: surligner_morceau(m))
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_file:
+                temp_path = temp_file.name
+                fichiers_temporaires.append(temp_path)
+                fichiers_parties.append(temp_path)
+
+            generer_audio_morceau(morceau, selection_langue, params, facteur_vitesse, temp_path)
+
+        if not conversion_en_cours:
+            restaurer_bouton_conversion()
+            return
+
+        list_path = tempfile.NamedTemporaryFile(delete=False, mode='w', suffix='.txt', encoding='utf-8')
+        for f_path in fichiers_parties:
+            list_path.write(f"file '{f_path}'\n")
+        list_path.close()
+        fichiers_temporaires.append(list_path.name)
+
+        cmd_concat = [
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+            "-i", list_path.name, "-b:a", "192k", fichier_mp3
+        ]
+        res = subprocess.run(cmd_concat, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        if res.returncode != 0:
+            raise Exception("Erreur lors de l'assemblage final du fichier MP3 avec ffmpeg.")
+
+        root.after(0, lambda: messagebox.showinfo("Succès", f"Fichier audio généré avec succès :\n{fichier_mp3}"))
+        
+    except Exception as e:
+        root.after(0, lambda err=str(e): messagebox.showwarning("Avertissement - Voix Locale", err))
+    
+    finally:
+        conversion_en_cours = False
+        restaurer_bouton_conversion()
+
+def restaurer_bouton_conversion():
+    def _restaurer():
+        zone_texte.tag_remove("surligne", "1.0", tk.END)
+        btn_convertir_actif.set(True)
+        lbl_convertir.config(text="Convertir en MP3", bg="#4CAF50", fg="white", cursor="hand2")
+    root.after(0, _restaurer)
+
+def lancer_conversion_thread(event=None):
+    global conversion_en_cours
+    if not btn_convertir_actif.get() or conversion_en_cours:
+        return
+    
+    texte = zone_texte.get("1.0", tk.END).strip()
+    if not texte:
+        messagebox.showwarning("Attention", "La zone de texte est vide.")
+        return
+
+    dernier_dir = config_actuelle.get("dernier_dossier", os.path.expanduser("~"))
+    fichier_mp3 = filedialog.asksaveasfilename(
+        initialdir=dernier_dir,
+        defaultextension=".mp3",
+        filetypes=[("Fichiers MP3", "*.mp3")],
+        title="Enregistrer le fichier audio sous"
+    )
+    
+    if not fichier_mp3:
+        return
+
+    conversion_en_cours = True
+    btn_convertir_actif.set(False)
+    lbl_convertir.config(bg="#D32F2F", fg="white", cursor="arrow")
+    lbl_convertir.config(text="Conversion en cours...")
+    
+    threading.Thread(target=executer_conversion, args=(fichier_mp3,), daemon=True).start()
+
+def quitter_application():
+    if verifier_modifications():
+        reponse = messagebox.askyesnocancel(f"Quitter {NOM_APP}", "Le texte a été modifié. Voulez-vous l'enregistrer avant de quitter ?")
+        if reponse is True:
+            enregistrer_texte()
+        elif reponse is None:
+            return
+            
+    sauvegarder_configuration()
+    root.destroy()
+
+def afficher_a_propos():
+    fen_apropos = tk.Toplevel(root)
+    fen_apropos.title(f"À propos de {NOM_APP}")
+    fen_apropos.geometry("340x220")
+    fen_apropos.resizable(False, False)
+    
+    try:
+        fen_apropos.attributes('-toolwindow', True)
+    except:
+        try:
+            fen_apropos.attributes('-type', 'dialog')
+        except:
+            pass
+
+    fen_apropos.transient(root)
+    fen_apropos.grab_set()
+
+    tk.Label(fen_apropos, text="🔊", font=(POLICE_UI, 36)).pack(pady=(15, 5))
+    tk.Label(fen_apropos, text=f"{NOM_APP} - {VERSION_APP}", font=(POLICE_UI, 11, "bold")).pack()
+    tk.Label(fen_apropos, text="Convertisseur et lecteur vocal interactif\nPortable sous Ubuntu MATE.", font=(POLICE_UI, 9), justify="center").pack(pady=10)
+    tk.Button(fen_apropos, text="OK", command=fen_apropos.destroy, width=10).pack(pady=5)
+
+root = tk.Tk()
+root.title(f"{NOM_APP} - {VERSION_APP}")
+root.geometry(config_actuelle.get("geometrie", "750x620"))
+root.minsize(600, 500)
+root.resizable(True, True)
+
+root.protocol("WM_DELETE_WINDOW", quitter_application)
+
+barre_menu = tk.Menu(root)
+menu_fichier = tk.Menu(barre_menu, tearoff=0)
+menu_recents = tk.Menu(menu_fichier, tearoff=0)
+
+mettre_a_jour_menu_fichier()
+barre_menu.add_cascade(label="Fichier", menu=menu_fichier)
+
+menu_aide = tk.Menu(barre_menu, tearoff=0)
+menu_aide.add_command(label="À propos", command=afficher_a_propos)
+barre_menu.add_cascade(label="?", menu=menu_aide)
+
+root.config(menu=barre_menu)
+
+label_titre = tk.Label(root, text="Conversion et Édition Interactive", font=(POLICE_UI, 11, "bold"))
+label_titre.pack(pady=8)
+
+cadre_selection = tk.Frame(root)
+cadre_selection.pack(pady=5, padx=15, fill=tk.X)
+
+entree_chemin = tk.Entry(cadre_selection, width=45, font=(POLICE_UI, 10))
+entree_chemin.pack(side=tk.LEFT, padx=(0, 5), expand=True, fill=tk.X)
+ToolTip(entree_chemin, "Chemin d'accès complet du fichier texte en cours")
+
+btn_parcourir = tk.Button(cadre_selection, text="Parcourir...", command=selectionner_fichier, font=(POLICE_UI, taille_police_boutons))
+btn_parcourir.pack(side=tk.RIGHT)
+ToolTip(btn_parcourir, "Rechercher et ouvrir un fichier texte existant sur le disque")
+
+cadre_options = tk.Frame(root)
+cadre_options.pack(pady=5, padx=15, fill=tk.X)
+
+label_langue = tk.Label(cadre_options, text="Langue :", width=10, anchor="w", font=(POLICE_UI, 10))
+label_langue.pack(side=tk.LEFT)
+
+choix_langues_actuel = charger_voix_disponibles()
+combo_langue = ttk.Combobox(cadre_options, values=choix_langues_actuel, state="readonly", width=18, font=(POLICE_UI, 10))
+combo_langue.pack(side=tk.LEFT, padx=(0, 15))
+combo_langue.set(config_actuelle.get("langue", "Français (France)"))
+ToolTip(combo_langue, "Sélectionner la langue ou la voix locale .onnx pour la lecture et conversion")
+
+label_vitesse = tk.Label(cadre_options, text="Vitesse MP3 :", width=12, anchor="w", font=(POLICE_UI, 10))
+label_vitesse.pack(side=tk.LEFT)
+
+combo_vitesse = ttk.Combobox(cadre_options, values=choix_vitesses, state="readonly", width=16, font=(POLICE_UI, 10))
+combo_vitesse.pack(side=tk.LEFT, fill=tk.X)
+combo_vitesse.set(config_actuelle.get("vitesse", "1.0x (Standard)"))
+ToolTip(combo_vitesse, "Définir le facteur de vitesse de lecture ou d'export audio")
+
+cadre_zone = tk.Frame(root)
+cadre_zone.pack(pady=10, padx=15, fill=tk.BOTH, expand=True)
+
+cadre_haut_texte = tk.Frame(cadre_zone)
+cadre_haut_texte.pack(anchor="w", fill=tk.X, pady=(0, 2))
+
+label_aperçu = tk.Label(cadre_haut_texte, text="Zone de texte modifiable :", font=(POLICE_UI, 10))
+label_aperçu.pack(side=tk.LEFT)
+
+label_nom_fichier = tk.Label(cadre_haut_texte, text="Nouveau fichier", font=(POLICE_UI, 10, "bold"), fg="#C62828")
+label_nom_fichier.pack(side=tk.LEFT, padx=(8, 0))
+ToolTip(label_nom_fichier, "Emplacement complet du fichier actuellement ouvert")
+
+btn_ouvrir_dossier = tk.Button(cadre_haut_texte, text="📁", font=(POLICE_UI, 9), command=ouvrir_dossier_contenant, relief=tk.RAISED, cursor="hand2")
+ToolTip(btn_ouvrir_dossier, "Ouvrir le dossier contenant ce fichier dans le gestionnaire de fichiers")
+
+btn_reset_font = tk.Button(cadre_haut_texte, text=" ↺ ", font=(POLICE_UI, taille_police_boutons), command=reset_taille_police, width=3, relief=tk.RAISED, cursor="hand2")
+btn_reset_font.pack(side=tk.RIGHT, padx=(2, 0))
+ToolTip(btn_reset_font, "Réinitialiser la taille de police par défaut (10pt)")
+
+btn_plus_font = tk.Button(cadre_haut_texte, text=" + ", font=(POLICE_UI, taille_police_boutons, "bold"), command=lambda: modifier_taille_police(1), width=3, relief=tk.RAISED, cursor="hand2")
+btn_plus_font.pack(side=tk.RIGHT, padx=(2, 2))
+ToolTip(btn_plus_font, "Agrandir la taille du texte dans l'éditeur")
+
+btn_moins_font = tk.Button(cadre_haut_texte, text=" - ", font=(POLICE_UI, taille_police_boutons, "bold"), command=lambda: modifier_taille_police(-1), width=3, relief=tk.RAISED, cursor="hand2")
+btn_moins_font.pack(side=tk.RIGHT, padx=(2, 2))
+ToolTip(btn_moins_font, "Réduire la taille du texte dans l'éditeur")
+
+cadre_interne = tk.Frame(cadore_zone if 'cadore_zone' in locals() else cadre_zone) # Correction de sécurité syntaxique
+cadre_interne.pack(fill=tk.BOTH, expand=True)
+
+cadre_pauses = tk.Frame(cadre_interne, padx=8, relief=tk.GROOVE, bd=1)
+cadre_pauses.pack(side=tk.RIGHT, fill=tk.Y, padx=(5, 0))
+
+lbl_pauses_titre = tk.Label(cadre_pauses, text="Pauses / Ponct.", font=(POLICE_UI, taille_police_boutons, "bold"))
+lbl_pauses_titre.pack(pady=(5, 5))
+
+liste_pauses = [
+    (",", "Virgule (,)", "Pause très courte (respiration rapide)"),
+    (".", "Point (.)", "Pause longue (fin de phrase)"),
+    (";", "Point-virgule (;)", "Pause moyenne (demi-phrase)"),
+    (":", "Deux-points (:)", "Pause d'introduction ou d'explication"),
+    ("...", "Suspension (...)", "Pause suspendue (hésitation ou attente)"),
+    ("—", "Tiret (—)", "Pause dramatique / rupture de ton"),
+    ("\n", "Paragraphe", "Saut de paragraphe (pause longue + retour à la ligne)")
+]
+
+boutons_pauses_liste = []
+for char, libelle, description_infobulle in liste_pauses:
+    btn_pause = tk.Button(
+        cadre_pauses, text=libelle, width=13, 
+        font=(POLICE_UI, max(7, taille_police_boutons - 1)),
+        command=lambda c=char: inserer_caractere(c)
+    )
+    btn_pause.pack(pady=2)
+    boutons_pauses_liste.append(btn_pause)
+    ToolTip(btn_pause, description_infobulle)
+
+scrollbar_texte = tk.Scrollbar(cadre_interne)
+scrollbar_texte.pack(side=tk.RIGHT, fill=tk.Y)
+
+zone_texte = tk.Text(cadre_interne, wrap=tk.WORD, yscrollcommand=scrollbar_texte.set, height=10, font=(POLICE_FAMILLE, taille_police_texte), undo=True)
+zone_texte.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+scrollbar_texte.config(command=zone_texte.yview)
+
+# --- Liaison directe des Raccourcis Clavier utiles (Ctrl+S, Ctrl+N, Ctrl+Z) ---
+zone_texte.bind("<Control-s>", enregistrer_texte)
+zone_texte.bind("<Control-S>", enregistrer_texte)
+zone_texte.bind("<Control-n>", nouveau_texte)
+zone_texte.bind("<Control-N>", nouveau_texte)
+zone_texte.bind("<Control-z>", annuler_action)
+zone_texte.bind("<Control-Z>", annuler_action)
+
+cadre_boutons = tk.Frame(root)
+cadre_boutons.pack(pady=10)
+
+btn_convertir_actif = tk.BooleanVar(value=True)
+lbl_convertir = tk.Label(
+    cadre_boutons, text="Convertir en MP3", 
+    bg="#4CAF50", fg="white", font=(POLICE_UI, taille_police_boutons, "bold"), 
+    padx=12, pady=8, relief=tk.RAISED, cursor="hand2"
+)
+lbl_convertir.pack(side=tk.LEFT, padx=10)
+lbl_convertir.bind("<Button-1>", lancer_conversion_thread)
+
+lbl_lecture = tk.Label(
+    cadre_boutons, text="Lire à partir du curseur", 
+    bg="#1976D2", fg="white", font=(POLICE_UI, taille_police_boutons, "bold"), 
+    padx=12, pady=8, relief=tk.RAISED, cursor="hand2"
+)
+lbl_lecture.pack(side=tk.LEFT, padx=10)
+lbl_lecture.bind("<Button-1>", basculer_lecture_directe)
+
+root.mainloop()
