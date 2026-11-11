@@ -90,6 +90,6 @@ Création de la structure d'empaquetage .deb avec raccourci GNOME et script post
 📜 Licence & Transparence
 Ce projet est distribué sous licence libre Copyleft (GNU GPL v3). Vous êtes libre de réutiliser, modifier et redistribuer ce logiciel à condition de conserver la même licence libre.
 
-Auteur principal : Thierry LLOPIS
+Auteur principal : Thierry LLOPIS (www.autre-ailleurs.fr - thierry@autre-ailleurs.fr)
 
 Transparence de développement : Ce logiciel a été conjointement développé et optimisé avec l'assistance de l'IA Gemini.
