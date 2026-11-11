@@ -1,3 +1,13 @@
+## 📥 Téléchargement et Installation Rapide
+
+Téléchargez le dernier paquet d'installation `.deb` depuis la section [Releases](https://github.com/autre-ailleurs/scribe-blabla/releases) :
+
+```bash
+# Une fois le fichier scribe-blabla-pkg.deb téléchargé :
+sudo apt install ./scribe-blabla-pkg.deb
+
+
+
 # 🔊 Scribe BlaBla
 
 **Scribe BlaBla** est une application Linux autonome et interactive d'édition de texte, de synthèse vocale et de conversion audio. Elle permet de lire du texte à voix haute en temps réel avec suivi visuel ou d'exporter vos textes sous forme de fichiers MP3.
