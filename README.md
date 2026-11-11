@@ -47,3 +47,49 @@ sudo apt update
 sudo apt install python3 python3-tk python3-gtts mpv ffmpeg
 # scribe-blabla
 # scribe-blabla
+
+🚀 Historique des versions
+v4.19 :
+
+Optimisation multi-écrans : la fenêtre d'options est désormais calculée et centrée exactement au milieu de la fenêtre principale.
+
+Ajout d'une sécurité syntaxique sur le cadre de la zone de texte.
+
+v4.18 :
+
+Suppression totale de la barre de titre système et du bouton de réduction (-) sur la fenêtre Options.
+
+Intégration d'une barre de titre sombre personnalisée déplaçable avec bouton de fermeture (✕) dédié.
+
+v4.17 :
+
+Masquage du bouton de réduction via les attributs de dialogue et d'outils (toolwindow).
+
+v4.16 :
+
+Application de l'attribut -type dialog sous X11/GNOME pour restreindre les contrôles de la fenêtre d'options.
+
+v4.15 :
+
+Dactivation du redimensionnement de la fenêtre d'options (resizable(False, False)).
+
+v4.14 :
+
+Modification du libellé de configuration : « Nb fichiers récents (x) : » est devenu « Nb fichiers récents : ».
+
+Versions précédentes (v1.0 à v4.13) :
+
+Déploiement initial de l'interface Tkinter.
+
+Ajout du support de Piper TTS (voix .onnx dans ~/ScribeBlaBla/voix-langues).
+
+Intégration du système d'infobulles intelligentes (anti-troncature aux bords d'écran).
+
+Création de la structure d'empaquetage .deb avec raccourci GNOME et script postinst.
+
+📜 Licence & Transparence
+Ce projet est distribué sous licence libre Copyleft (GNU GPL v3). Vous êtes libre de réutiliser, modifier et redistribuer ce logiciel à condition de conserver la même licence libre.
+
+Auteur principal : Thierry LLOPIS
+
+Transparence de développement : Ce logiciel a été conjointement développé et optimisé avec l'assistance de l'IA Gemini.
